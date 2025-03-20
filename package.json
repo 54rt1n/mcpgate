@@ -1,0 +1,33 @@
+{
+  "name": "mcpgate",
+  "version": "1.0.0",
+  "description": "A simple stdio-to-http bridge for MCP connections",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "mcpgate": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test-client.js",
+    "debug": "node debug.js",
+    "prepare": "node -e \"try { require('fs').chmodSync('./index.js', '755') } catch(e) {}\""
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "stdio",
+    "sse",
+    "bridge"
+  ],
+  "author": "Martin Bukowski <54rt1n@proton.me>",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.7.0",
+    "eventsource": "^2.0.2",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=14.16"
+  }
+}
