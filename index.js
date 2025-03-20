@@ -21,7 +21,7 @@ const url = process.argv[2];
 if (!url) {
   console.error('[mcpgate] Error: No URL provided.');
   console.error('[mcpgate] Usage: mcpgate <url>');
-  console.error('[mcpgate] Example: mcpgate http://example.com/sse');
+  console.error('[mcpgate] Example: mcpgate http://example.com:8000/sse');
   process.exit(1);
 }
 
@@ -41,24 +41,16 @@ const readline = createInterface({
 
 let lastRequestId = null;
 
-function writeErrorMessage(error) {
+function writeErrorMessage(message, data, code = -9001) {
   // We need to write out a JSON-RPC error message to stdout
   process.stdout.write(JSON.stringify({
     jsonrpc: '2.0',
     id: lastRequestId ?? 0,
     error: {
-      code: -9001,
-      message: error.message,
-      data: error.stack
+      code: code,
+      message: message,
+      data: data
     }
-  }) + '\n');
-}
-
-function writeSuccessMessage(message) {
-  process.stdout.write(JSON.stringify({
-    jsonrpc: '2.0',
-    id: lastRequestId ?? 0,
-    result: message
   }) + '\n');
 }
 
@@ -69,18 +61,13 @@ let client = null;
 function debugTransport(transport) {
   const originalStart = transport.start.bind(transport);
   transport.start = async function() {
-    // console.error('[mcpgate] Transport.start() called');
     try {
       await originalStart();
-      // console.error('[mcpgate] Transport.start() completed successfully');
       
       // Now that start() has completed, the _eventSource should be created
-      // Let's add event listeners after transport is properly started
       if (transport._eventSource) {
-        // console.error('[mcpgate] Adding event listeners to _eventSource after start');
         const originalEventSourceOnMessage = transport._eventSource.onmessage;
         transport._eventSource.onmessage = (event) => {
-          // console.error(`[mcpgate] Raw _eventSource message: ${event.data}`);
           // Call the original handler if it exists
           if (originalEventSourceOnMessage) {
             originalEventSourceOnMessage(event);
@@ -88,7 +75,6 @@ function debugTransport(transport) {
         };
       }
     } catch (error) {
-      // console.error(`[mcpgate] Transport.start() failed: ${error.message}`);
       writeErrorMessage(error);
       throw error;
     }
@@ -96,12 +82,9 @@ function debugTransport(transport) {
 
   const originalSend = transport.send.bind(transport);
   transport.send = async function(message) {
-    // console.error(`[mcpgate] Transport.send() called with message type: ${message.method || 'response'}`);
     try {
       await originalSend(message);
-      // console.error('[mcpgate] Transport.send() completed successfully');
     } catch (error) {
-      // console.error(`[mcpgate] Transport.send() failed: ${error.message}`);
       writeErrorMessage(error);
       throw error;
     }
@@ -110,9 +93,6 @@ function debugTransport(transport) {
   // Hook into the onmessage callback - this is a proper public interface
   const originalOnmessage = transport.onmessage;
   transport.onmessage = (message) => {
-    // console.error(`[mcpgate] Transport.onmessage called with: ${JSON.stringify(message)}`);
-    // ALWAYS write every message to stdout, regardless of handler chain
-    process.stdout.write(JSON.stringify(message) + '\n');
     if (originalOnmessage) {
       originalOnmessage(message);
     }
@@ -132,17 +112,10 @@ function debugTransport(transport) {
       const originalESOnMessage = transport._eventSource.onmessage;
       transport._eventSource.onmessage = (event) => {
         try {
-          // Log the raw event and its properties
-          // console.error(`[mcpgate] Raw event received, type: ${typeof event.data}`);
-          // console.error(`[mcpgate] Raw event properties: ${Object.keys(event).join(', ')}`);
-          // console.error(`[mcpgate] Raw event data: ${event.data}`);
-          
-          // Handle data properly based on type
           let jsonData;
           if (Buffer.isBuffer(event.data)) {
             // If it's a buffer, convert to string first
             const dataStr = event.data.toString('utf8');
-            // console.error(`[mcpgate] Converted buffer to string: ${dataStr}`);
             jsonData = JSON.parse(dataStr);
           } else if (typeof event.data === 'string') {
             // Parse string data
@@ -153,11 +126,7 @@ function debugTransport(transport) {
           }
           
           // Format as proper JSON-RPC message
-          // console.error(`[mcpgate] Parsed JSON data: ${JSON.stringify(jsonData)}`);
-          
-          // Always write to stdout
           process.stdout.write(JSON.stringify(jsonData) + '\n');
-          // console.error('[mcpgate] Wrote message to stdout');
           
           // Create cancellation notification if needed
           if (jsonData.error) {
@@ -169,7 +138,6 @@ function debugTransport(transport) {
                 reason: `Error: ${jsonData.error.message || 'Unknown error'}`
               }
             };
-            // console.error(`[mcpgate] Sending cancellation notification for request ${jsonData.id}`);
             process.stdout.write(JSON.stringify(cancelNotification) + '\n');
           }
           
@@ -178,8 +146,6 @@ function debugTransport(transport) {
             originalESOnMessage(event);
           }
         } catch (err) {
-          // console.error(`[mcpgate] Error in event handler: ${err.message}`);
-          // console.error(`[mcpgate] Error stack: ${err.stack}`);
           writeErrorMessage(err);
         }
       };
@@ -193,7 +159,7 @@ function debugTransport(transport) {
 
 // Graceful shutdown function
 async function shutdown() {
-  // console.error('[mcpgate] Gracefully shutting down...');
+  console.error('[mcpgate] Gracefully shutting down...');
   
   try {
     // Clean up readline interface
@@ -201,14 +167,14 @@ async function shutdown() {
     
     // Close the client connection and wait for it to complete
     if (client) {
-      // console.error('[mcpgate] Closing client connection...');
+      console.error('[mcpgate] Closing client connection...');
       
       try {
         // Send a cancellation notification before closing
         // This helps the server understand the client is intentionally disconnecting
         const transport = client.transport;
         if (transport) {
-          // console.error('[mcpgate] Sending shutdown notification...');
+          console.error('[mcpgate] Sending shutdown notification...');
           await transport.send({
             jsonrpc: "2.0",
             method: "notifications/cancelled",
@@ -216,15 +182,12 @@ async function shutdown() {
               reason: "Client shutting down"
             }
           });
-          // console.error('[mcpgate] Shutdown notification sent.');
-
-          writeSuccessMessage('Shutdown notification sent.');
-          
+          console.error('[mcpgate] Shutdown notification sent.');
           // Small delay to allow the server to process the notification
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       } catch (error) {
-        // console.error(`[mcpgate] Error sending shutdown notification: ${error.message}`);
+        console.error(`[mcpgate] Error sending shutdown notification: ${error.message}`);
         writeErrorMessage(error);
       }
       
@@ -237,6 +200,7 @@ async function shutdown() {
     process.exit(0);
   } catch (error) {
     console.error(`[mcpgate] Error during shutdown: ${error.message}`);
+    writeErrorMessage(error);
     process.exit(1);
   }
 }
@@ -251,9 +215,6 @@ async function main() {
     const transport = new SSEClientTransport(sseUrl);
     console.error('[mcpgate] Transport created');
     
-    // Inspect transport object
-    // console.error('[mcpgate] Transport properties:', Object.keys(transport));
-    
     // Add debug wrappers
     debugTransport(transport);
     
@@ -263,26 +224,11 @@ async function main() {
       version: '1.0.0',
     });
     
-    // Set up error handler
-    transport.onerror = (error) => {
-      console.error(`[mcpgate] Transport error: ${error.message}`);
-      if (error.stack) {
-        console.error(`[mcpgate] Error stack: ${error.stack}`);
-      }
-    };
-    
-    // Add onclose handler
-    transport.onclose = () => {
-      console.error('[mcpgate] Transport connection closed');
-    };
-    
     // Forward all messages from the server to stdout
     // This overwrites the default client handler but that's what we want
     transport.onmessage = (message) => {
       // Output raw message to stdout for the caller to consume
-      console.error(`[mcpgate] Received message from server: ${message.method || 'response'}`);
-      console.error(`[mcpgate] Message content: ${JSON.stringify(message)}`);
-      // Explicitly write to stdout for the parent process to capture
+      console.error(`[mcpgate] Writing message to stdout: ${JSON.stringify(message)}`);
       process.stdout.write(JSON.stringify(message) + '\n');
     };
     
@@ -290,24 +236,16 @@ async function main() {
     console.error('[mcpgate] Connecting to server...');
     await client.connect(transport);
     console.error('[mcpgate] Connected successfully');
-    console.error('[mcpgate] Server capabilities:', JSON.stringify(client.getServerCapabilities()));
-    
-    // Inspect client object after connection
-    console.error('[mcpgate] Client properties:', Object.keys(client));
     
     // Handle input from stdin
     readline.on('line', async (line) => {
       if (line.trim()) {
-        console.error('[mcpgate] Processing message from stdin');
-        
         try {
           // Parse the message to ensure it's valid JSON
           const message = JSON.parse(line);
-          console.error(`[mcpgate] Sending message: ${JSON.stringify(message)}`);
           
           // Send the raw message directly through the transport
           await transport.send(message);
-          console.error(`[mcpgate] Message sent successfully`);
         } catch (error) {
           console.error(`[mcpgate] Error processing stdin message: ${error.message}`);
           console.error(`[mcpgate] Raw input: ${line}`);
@@ -338,6 +276,7 @@ async function main() {
     if (error.stack) {
       console.error(`[mcpgate] Error stack: ${error.stack}`);
     }
+    writeErrorMessage(error);
     process.exit(1);
   }
 }
