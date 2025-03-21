@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200">
+  <!-- Background -->
+  <rect width="800" height="200" fill="#000000" />
+  
+  <!-- Matrix digital rain -->
+  <g fill="#00ff00" opacity="0.3" font-family="Courier New, monospace">
+    <text x="50" y="20" font-size="14">10110101</text>
+    <text x="150" y="40" font-size="14">01001010</text>
+    <text x="250" y="20" font-size="14">11010111</text>
+    <text x="350" y="40" font-size="14">10111010</text>
+    <text x="450" y="20" font-size="14">01010110</text>
+    <text x="550" y="40" font-size="14">10110010</text>
+    <text x="650" y="20" font-size="14">01011101</text>
+    <text x="750" y="40" font-size="14">10101100</text>
+    
+    <!-- Falling characters -->
+    <text x="120" y="180" font-size="16">01</text>
+    <text x="120" y="160" font-size="16">10</text>
+    <text x="120" y="140" font-size="16">01</text>
+    <text x="120" y="120" font-size="16">10</text>
+    
+    <text x="220" y="60" font-size="16">10</text>
+    <text x="220" y="80" font-size="16">01</text>
+    <text x="220" y="100" font-size="16">10</text>
+    <text x="220" y="120" font-size="16">01</text>
+    
+    <text x="420" y="180" font-size="16">01</text>
+    <text x="420" y="160" font-size="16">10</text>
+    <text x="420" y="140" font-size="16">01</text>
+    <text x="420" y="120" font-size="16">10</text>
+    
+    <text x="580" y="60" font-size="16">10</text>
+    <text x="580" y="80" font-size="16">01</text>
+    <text x="580" y="100" font-size="16">10</text>
+    <text x="580" y="120" font-size="16">01</text>
+    
+    <text x="700" y="180" font-size="16">01</text>
+    <text x="700" y="160" font-size="16">10</text>
+    <text x="700" y="140" font-size="16">01</text>
+    <text x="700" y="120" font-size="16">10</text>
+    
+    <!-- Matrix-like symbols -->
+    <text x="30" y="100" font-size="18">φ</text>
+    <text x="60" y="140" font-size="18">Ω</text>
+    <text x="90" y="80" font-size="18">Δ</text>
+    <text x="300" y="160" font-size="18">λ</text>
+    <text x="550" y="170" font-size="18">Σ</text>
+    <text x="650" y="70" font-size="18">Ψ</text>
+    <text x="750" y="120" font-size="18">Γ</text>
+  </g>
+  
+  <!-- Grid lines -->
+  <g stroke="#008800" stroke-width="1" opacity="0.5">
+    <path d="M0,40 H800 M0,80 H800 M0,120 H800 M0,160 H800" />
+    <path d="M100,0 V200 M200,0 V200 M300,0 V200 M400,0 V200 M500,0 V200 M600,0 V200 M700,0 V200" />
+  </g>
+  
+  <!-- Connection nodes and data flow -->
+  <g>
+    <!-- Left node (STDIN/STDOUT) -->
+    <circle cx="180" cy="100" r="50" fill="#000000" stroke="#00ff00" stroke-width="3" />
+    <text x="180" y="90" font-family="'Courier New', monospace" font-size="14" fill="#00ff00" text-anchor="middle">STDIN</text>
+    <text x="180" y="110" font-family="'Courier New', monospace" font-size="14" fill="#00ff00" text-anchor="middle">STDOUT</text>
+    
+    <!-- Right node (HTTP/SSE) -->
+    <circle cx="620" cy="100" r="50" fill="#000000" stroke="#00ff00" stroke-width="3" />
+    <text x="620" y="90" font-family="'Courier New', monospace" font-size="14" fill="#00ff00" text-anchor="middle">HTTP</text>
+    <text x="620" y="110" font-family="'Courier New', monospace" font-size="14" fill="#00ff00" text-anchor="middle">SSE</text>
+    
+    <!-- Bridge/Connection with glowing effect -->
+    <path d="M230,100 C300,60 500,140 570,100" stroke="#003300" stroke-width="8" fill="none" />
+    <path d="M230,100 C300,60 500,140 570,100" stroke="#00ff00" stroke-width="4" fill="none" />
+    <path d="M230,100 C300,140 500,60 570,100" stroke="#003300" stroke-width="8" fill="none" />
+    <path d="M230,100 C300,140 500,60 570,100" stroke="#00ff00" stroke-width="4" fill="none" />
+    
+    <!-- Data packets flowing with glow -->
+    <circle cx="280" cy="118" r="6" fill="#000000" stroke="#00ff00" stroke-width="2" />
+    <circle cx="380" cy="82" r="6" fill="#000000" stroke="#00ff00" stroke-width="2" />
+    <circle cx="480" cy="118" r="6" fill="#000000" stroke="#00ff00" stroke-width="2" />
+    <circle cx="520" cy="82" r="6" fill="#000000" stroke="#00ff00" stroke-width="2" />
+    
+    <!-- MCP Gateway in center with glow effect -->
+    <rect x="350" y="70" width="100" height="60" rx="10" fill="#003300" stroke="#00ff00" stroke-width="2" />
+    <text x="400" y="105" font-family="'Courier New', monospace" font-size="14" fill="#00ff00" text-anchor="middle" font-weight="bold">MCPGate</text>
+  </g>
+  
+  <!-- Main Title with matrix style and glow -->
+  <text x="400" y="40" font-family="'Courier New', monospace" font-size="32" fill="#000000" text-anchor="middle" font-weight="bold" stroke="#006600" stroke-width="8">MCPGate</text>
+  <text x="400" y="40" font-family="'Courier New', monospace" font-size="32" fill="#00ff00" text-anchor="middle" font-weight="bold">MCPGate</text>
+  
+  <!-- Subtitle with glow -->
+  <text x="400" y="170" font-family="'Courier New', monospace" font-size="16" fill="#00ff00" text-anchor="middle" opacity="0.9">Model Context Protocol Bridge</text>
+  
+  <!-- Glitch effect on text -->
+  <text x="403" y="39" font-family="'Courier New', monospace" font-size="32" fill="#ffffff" text-anchor="middle" font-weight="bold" opacity="0.1">MCPGate</text>
+</svg>
