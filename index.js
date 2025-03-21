@@ -45,10 +45,10 @@ function writeErrorMessage(message, data, code = -9001) {
   // We need to write out a JSON-RPC error message to stdout
   process.stdout.write(JSON.stringify({
     jsonrpc: '2.0',
-    id: lastRequestId ?? 0,
+    id: lastRequestId !== null ? lastRequestId : 0, // Never use null as ID
     error: {
       code: code,
-      message: message,
+      message: typeof message === 'string' ? message : (message && message.message ? message.message : 'Unknown error'),
       data: data
     }
   }) + '\n');
@@ -142,7 +142,7 @@ function debugTransport(transport) {
           process.stdout.write(JSON.stringify(jsonData) + '\n');
           
           // Create cancellation notification if needed
-          if (jsonData.error) {
+          if (jsonData.error && jsonData.id !== undefined && jsonData.id !== null) {
             const cancelNotification = {
               jsonrpc: "2.0",
               method: "notifications/cancelled",
