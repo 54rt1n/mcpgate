@@ -26,7 +26,7 @@ if (!url) {
 }
 
 // Generate a unique session ID for this client
-const sessionId = randomUUID();
+let sessionId = randomUUID();
 
 // Log to stderr so we don't interfere with the stdout message channel
 console.error('[mcpgate] Starting SDK client...');
@@ -85,6 +85,19 @@ function debugTransport(transport) {
     try {
       await originalSend(message);
     } catch (error) {
+      // If this is a request (has an ID), generate an appropriate error response
+      if (message.id) {
+        const errorResponse = {
+          jsonrpc: "2.0",
+          id: message.id,
+          error: {
+            code: -32003,
+            message: `Failed to send request: ${error.message}`,
+          }
+        };
+        process.stdout.write(JSON.stringify(errorResponse) + '\n');
+      }
+      
       writeErrorMessage(error);
       throw error;
     }
