@@ -221,7 +221,7 @@ const MCPGate = (function() {
       log('Creating new client instance');
       state.client = new Client({
         name: 'mcpgate',
-        version: '1.0.0',
+        version: '1.0.1',
       });
       
       // Connect to the server - this calls transport.start() internally

@@ -1,0 +1,21 @@
+# Temporary and backup files
+*copy*
+*.old.js
+*.bak
+*.tmp
+
+# Development files
+node_modules/
+.vscode/
+.idea/
+.git/
+.gitignore
+
+# Test files
+test/
+tests/
+*.test.js
+
+# Debug files
+debug.js
+*.log 
