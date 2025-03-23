@@ -17,6 +17,7 @@ import { createInterface } from 'readline';
 import { randomUUID } from 'crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
 // Create a module to encapsulate the functionality
 const MCPGate = (function() {
@@ -65,14 +66,51 @@ const MCPGate = (function() {
   }
   
   /**
+   * Map an error message to the appropriate error code
+   */
+  function getErrorCodeForMessage(message) {
+    if (typeof message !== 'string') return ErrorCode.InternalError;
+    
+    if (message.includes('Could not find session') || 
+        message.includes('Session expired') || 
+        message.includes('Invalid session')) {
+      return ErrorCode.MethodNotFound;
+    }
+    
+    if (message.includes('timed out') || message.includes('timeout')) {
+      return ErrorCode.RequestTimeout;
+    }
+    
+    if (message.includes('connection') || message.includes('Connection lost') || 
+        message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
+      return ErrorCode.ConnectionClosed;
+    }
+    
+    if (message.includes('parse') || message.includes('Invalid JSON')) {
+      return ErrorCode.ParseError;
+    }
+
+    if (message.includes('invalid request') || message.includes('Invalid request')) {
+      return ErrorCode.InvalidRequest;
+    }
+    
+    return ErrorCode.InternalError;
+  }
+  
+  /**
    * Write an error message to stdout in JSON-RPC format
    */
-  function writeErrorMessage(message, data, code = -32000, id = undefined) {
+  function writeErrorMessage(message, data, code = undefined, id = undefined) {
     // Format the message
     const myMessage = typeof message === 'string' 
       ? message 
       : (message && message.message ? message.message : 'Unknown error');
     
+    // If no error code was provided, try to determine one from the message
+    if (code === undefined) {
+      code = getErrorCodeForMessage(myMessage);
+    }
+
     // Ensure id is a string or number, never null
     // If id is null or undefined, generate a string ID
     const responseId = (id !== undefined && id !== null) ? id : "error-" + Date.now();
@@ -534,15 +572,30 @@ const MCPGate = (function() {
             log(`EventSource error: ${err.type}`);
             
             // Only react to errors if we're not already handling them
-            if (!state.reconnecting && transport._eventSource && transport._eventSource.readyState === 2) { // CLOSED
-              log('EventSource connection closed due to error');
-              state.transportReady = false;
-              startReconnection();
+            if (!state.reconnecting && transport._eventSource) {
+              // Check if the connection is closed (readyState === 2) or connecting (readyState === 0)
+              if (transport._eventSource.readyState === 2 || transport._eventSource.readyState === 0) {
+                log('EventSource connection closed or connecting due to error');
+                state.transportReady = false;
+                
+                // Don't try to reconnect immediately on every error, throttle the reconnect attempts
+                if (!state.reconnecting) {
+                  log('Scheduling reconnection after EventSource error');
+                  setTimeout(() => {
+                    startReconnection();
+                  }, 1000); // Small delay to prevent rapid reconnection attempts
+                }
+              }
             }
             
             // Call the original error handler if it exists
             if (originalOnError) {
-              originalOnError(err);
+              try {
+                originalOnError(err);
+              } catch (callbackError) {
+                // Prevent callback errors from crashing the process
+                log(`Error in original error handler: ${callbackError.message}`);
+              }
             }
           };
           
@@ -595,7 +648,7 @@ const MCPGate = (function() {
             } catch (err) {
               // If we can't parse the event data, send a connection closed error
               log(`Error parsing event data: ${err.message}`);
-              writeErrorMessage(`EventSource connection error: ${err.message}`, {}, -32000);
+              writeErrorMessage(`EventSource connection error: ${err.message}`, {}, ErrorCode.ParseError);
             }
           };
         }
@@ -647,7 +700,7 @@ const MCPGate = (function() {
           }
         } catch (error) {
           log(`Error sending shutdown notification: ${error.message}`);
-          writeErrorMessage(error, {}, -32000);
+          writeErrorMessage(error, {}, ErrorCode.ConnectionClosed);
         }
 
         
@@ -660,7 +713,7 @@ const MCPGate = (function() {
       process.exit(0);
     } catch (error) {
       log(`Error during shutdown: ${error.message}`);
-      writeErrorMessage(error, {}, -32000);
+      writeErrorMessage(error, {}, ErrorCode.ConnectionClosed);
       process.exit(1);
     }
   }
@@ -721,7 +774,7 @@ const MCPGate = (function() {
           // Check if this is a connection error
           if (isFatalConnectionError(error)) {
             log('Connection error detected, notifying client');
-            writeErrorMessage(`Connection lost, client should reconnect: ${error.message}`, {}, -32000, thisRequestId);
+            writeErrorMessage(`Connection lost, client should reconnect: ${error.message}`, {}, ErrorCode.ConnectionClosed, thisRequestId);
             state.transportReady = false;
             startReconnection();
           }
