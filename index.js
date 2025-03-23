@@ -27,7 +27,8 @@ const MCPGate = (function() {
     sessionId: null,
     debug: true,
     reconnectDelay: 1000,
-    maxReconnectAttempts: 5
+    maxReconnectAttempts: 5,
+    recoveryInterval: 30000 // 30 second recovery interval
   };
   
   let state = {
@@ -39,7 +40,9 @@ const MCPGate = (function() {
     reconnecting: false,
     reconnectAttempts: 0,
     originalSessionId: null, // Store the original session ID for reconnection
-    consecutiveTimeouts: 0   // Track consecutive timeouts
+    consecutiveTimeouts: 0,   // Track consecutive timeouts
+    lastReconnectAttempt: 0,  // Track the timestamp of the last reconnection attempt
+    reconnectTimer: null      // Track the active reconnect timer
   };
   
   // Standard handshake message
@@ -176,6 +179,20 @@ const MCPGate = (function() {
       // Clear previous instances
       state.client = null;
       state.transport = null;
+      
+      // If we've hit the maximum reconnection attempts, enter recovery mode
+      if (isReconnect && state.reconnectAttempts >= config.maxReconnectAttempts) {
+        log(`Maximum reconnection attempts (${config.maxReconnectAttempts}) reached`);
+        
+        // Send error to client but don't exit
+        writeErrorMessage(`Failed to reconnect after ${config.maxReconnectAttempts} attempts: Connection refused`, {}, ErrorCode.ConnectionClosed);
+        
+        // Enter recovery mode - we'll wait for new requests to trigger reconnection
+        log('Entering recovery mode - waiting for new client activity to attempt reconnection');
+        state.reconnecting = false;
+        
+        return false;
+      }
       
       // Decide which session ID to use
       if (isReconnect) {
@@ -338,57 +355,101 @@ const MCPGate = (function() {
    * Start the reconnection process
    */
   function startReconnection() {
+    // If we're already reconnecting, don't start another attempt
     if (state.reconnecting) {
       log('Reconnection already in progress, skipping');
       return;
     }
     
-    state.reconnecting = true;
-    state.reconnectAttempts++;
+    // Clear any existing timer
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
     
-    // Implement exponential backoff with a cap
+    // Check if we should reset reconnection counter based on time elapsed
+    const currentTime = Date.now();
+    const timeSinceLastAttempt = currentTime - state.lastReconnectAttempt;
+    
+    // If it's been long enough since our last attempt, reset the counter
+    if (timeSinceLastAttempt > config.recoveryInterval) {
+      log(`${timeSinceLastAttempt}ms since last reconnection attempt - resetting counter`);
+      state.reconnectAttempts = 0;
+    }
+    
+    // Update attempt counter and timestamp
+    state.reconnectAttempts++;
+    state.lastReconnectAttempt = currentTime;
+    state.reconnecting = true;
+    
+    // Calculate delay with exponential backoff (capped at 10 seconds)
     const delay = Math.min(
       config.reconnectDelay * Math.pow(1.5, state.reconnectAttempts - 1),
-      10000  // Maximum delay of 10 seconds
+      10000
     );
     
     log(`Scheduling reconnection attempt ${state.reconnectAttempts} in ${delay}ms`);
     
-    setTimeout(async () => {
-      log(`Executing reconnection attempt ${state.reconnectAttempts}`);
+    // Create the reconnection timer
+    state.reconnectTimer = setTimeout(executeReconnection, delay);
+    
+    // Allow Node.js to exit even if this timeout is still pending
+    if (state.reconnectTimer.unref) {
+      state.reconnectTimer.unref();
+    }
+  }
+  
+  /**
+   * Execute a reconnection attempt
+   */
+  async function executeReconnection() {
+    // Clear the timer reference
+    state.reconnectTimer = null;
+    
+    log(`Executing reconnection attempt ${state.reconnectAttempts}`);
+    
+    try {
+      // Ensure handshake message is in the queue
+      ensureHandshakeInQueue();
       
-      try {
-        // Ensure handshake message is in the queue
-        ensureHandshakeInQueue();
+      // Attempt reconnection
+      const success = await createConnection(true);
+      
+      if (success) {
+        log('Reconnection successful');
+        state.reconnecting = false;
+      } else if (state.reconnectAttempts < config.maxReconnectAttempts) {
+        // Allow another reconnection attempt
+        state.reconnecting = false;
+        startReconnection();
+      } else {
+        log(`Maximum reconnection attempts (${config.maxReconnectAttempts}) reached`);
         
-        // Attempt reconnection
-        const success = await createConnection(true);
+        // Send error to client
+        writeErrorMessage(
+          `Failed to reconnect after ${config.maxReconnectAttempts} attempts: Connection refused`,
+          {},
+          ErrorCode.ConnectionClosed
+        );
         
-        if (success) {
-          log('Reconnection successful');
-          state.reconnecting = false;
-        } else if (state.reconnectAttempts < config.maxReconnectAttempts) {
-          // Schedule another attempt
-          state.reconnecting = false;  // Reset to allow a new reconnection attempt
-          startReconnection();
-        } else {
-          log('Reconnection failed, maximum attempts reached');
-          state.reconnecting = false;
-          writeErrorMessage(`Failed to reconnect after ${config.maxReconnectAttempts} attempts`);
-        }
-      } catch (error) {
-        log(`Error during reconnection: ${error.message}`);
-        if (state.reconnectAttempts < config.maxReconnectAttempts) {
-          // Schedule another attempt
-          state.reconnecting = false;  // Reset to allow a new reconnection attempt
-          startReconnection();
-        } else {
-          log('Reconnection failed, maximum attempts reached');
-          state.reconnecting = false;
-          writeErrorMessage(`Failed to reconnect after ${config.maxReconnectAttempts} attempts: ${error.message}`);
-        }
+        // Allow future reconnection attempts 
+        state.reconnecting = false;
       }
-    }, delay);
+    } catch (error) {
+      log(`Error during reconnection: ${error.message}`);
+      state.reconnecting = false;
+      
+      if (state.reconnectAttempts < config.maxReconnectAttempts) {
+        startReconnection();
+      } else {
+        log(`Maximum reconnection attempts (${config.maxReconnectAttempts}) reached after error`);
+        writeErrorMessage(
+          `Failed to reconnect after ${config.maxReconnectAttempts} attempts: ${error.message}`,
+          {},
+          ErrorCode.ConnectionClosed
+        );
+      }
+    }
   }
   
   /**
@@ -422,13 +483,24 @@ const MCPGate = (function() {
    * Process and send client messages to the server
    */
   async function handleRequestMessage(transport, message, thisRequestId) {
-    // If transport is not ready, queue the message
+    // If transport is not ready, queue the message and possibly trigger reconnection
     if (!state.transportReady) {
-      if (!thisRequestId) {
-        log(`Transport not ready, skipping message`);
-      } else {
+      // Queue messages with IDs to be sent when transport is ready
+      if (thisRequestId) {
         log(`Transport not ready, queuing message ID: ${thisRequestId}`);
         state.messageQueue.push(message);
+        
+        // Check if we should attempt reconnection
+        const currentTime = Date.now();
+        const timeSinceLastAttempt = currentTime - state.lastReconnectAttempt;
+        
+        // If it's been long enough, trigger a reconnection attempt
+        if (timeSinceLastAttempt > config.recoveryInterval && !state.reconnecting) {
+          log(`New request and ${timeSinceLastAttempt}ms since last attempt - triggering reconnection`);
+          startReconnection();
+        }
+      } else {
+        log(`Transport not ready, skipping message without ID`);
       }
       return;
     }
@@ -443,13 +515,21 @@ const MCPGate = (function() {
       if (isFatalConnectionError(error)) {
         log('Fatal connection error detected, triggering full reconnection');
         state.transportReady = false;
-        state.messageQueue.push(message);
+        
+        // Queue the message if it has an ID
+        if (thisRequestId) {
+          state.messageQueue.push(message);
+        }
+        
         startReconnection();
       } else {
-        // Non-fatal error, just requeue the message
+        // Non-fatal error, just requeue the message if it has an ID
         state.transportReady = false;
-        state.messageQueue.push(message);
-        log(`(requeued) Error sending message ID: ${thisRequestId}: ${error.message}`);
+        
+        if (thisRequestId) {
+          state.messageQueue.push(message);
+          log(`Requeued message ID: ${thisRequestId}`);
+        }
       }
     }
   }
@@ -569,7 +649,7 @@ const MCPGate = (function() {
           // Add explicit error handler to detect early connection issues
           const originalOnError = transport._eventSource.onerror;
           transport._eventSource.onerror = (err) => {
-            log(`EventSource error: ${err.type}`);
+            log(`EventSource error: ${JSON.stringify(err)}`);
             
             // Only react to errors if we're not already handling them
             if (!state.reconnecting && transport._eventSource) {
@@ -719,6 +799,73 @@ const MCPGate = (function() {
   }
   
   /**
+   * Handle incoming messages from stdin
+   */
+  function handleStdinMessage(line) {
+    if (line.trim()) {
+      let thisRequestId = null;
+      try {
+        // Parse the message to ensure it's valid JSON
+        const message = JSON.parse(line);
+        
+        // Store the request ID for potential error handling
+        if (message.id !== undefined) {
+          log(`Tracking request ID: ${message.id}${message.method ? ', method: ' + message.method : ''}`);
+          thisRequestId = message.id;
+        } else if (message.method) {
+          log(`Processing notification method: ${message.method}`);
+          if (message.method === "notifications/cancelled") {
+            const params = message.params;
+            const requestId = params.requestId;
+            log(`Received cancellation notification: requestId: ${requestId}, reason: ${params.reason}`);
+            
+            // Check if this is a timeout cancellation
+            if (params.reason && params.reason.includes('Request timed out')) {
+              state.consecutiveTimeouts++;
+              log(`Timeout detected! Consecutive timeouts: ${state.consecutiveTimeouts}`);
+              
+              // If we have several consecutive timeouts, trigger reconnection
+              if (state.consecutiveTimeouts >= 3 && !state.reconnecting) {
+                log('Multiple consecutive timeouts detected, triggering reconnection');
+                
+                // Only if we're not already reconnecting
+                state.transportReady = false;
+                startReconnection();
+                
+                state.consecutiveTimeouts = 0; // Reset the counter
+              }
+            }
+            
+            // Remove cancelled message from queue
+            const initialLength = state.messageQueue.length;
+            state.messageQueue = state.messageQueue.filter(m => m.id !== requestId);
+            log(`Message queue length: ${state.messageQueue.length}`);
+            
+            // If we removed an item, log it
+            if (initialLength !== state.messageQueue.length) {
+              log(`Removed cancelled message ${requestId} from queue`);
+            }
+          }
+        }
+        
+        // Use the message handler instead of sending directly
+        handleRequestMessage(state.transport, message, thisRequestId);
+      } catch (error) {
+        log(`Error processing stdin message: ${error.message}`);
+        log(`Raw input: ${line}`);
+        
+        // Check if this is a connection error
+        if (isFatalConnectionError(error)) {
+          log('Connection error detected, notifying client');
+          writeErrorMessage(`Connection lost, client should reconnect: ${error.message}`, {}, ErrorCode.ConnectionClosed, thisRequestId);
+          state.transportReady = false;
+          startReconnection();
+        }
+      }
+    }
+  }
+  
+  /**
    * Setup stdin handling for message input
    */
   function setupStdinHandler() {
@@ -729,62 +876,7 @@ const MCPGate = (function() {
     });
     
     // Handle input from stdin
-    state.readline.on('line', async (line) => {
-      if (line.trim()) {
-        let thisRequestId = null;
-        try {
-          // Parse the message to ensure it's valid JSON
-          const message = JSON.parse(line);
-          
-          // Store the request ID for potential error handling
-          if (message.id !== undefined) {
-            log(`Tracking request ID: ${message.id}${message.method ? ', method: ' + message.method : ''}`);
-            thisRequestId = message.id;
-          } else if (message.method) {
-            log(`Processing notification method: ${message.method}`);
-            if (message.method === "notifications/cancelled") {
-              const params = message.params;
-              const requestId = params.requestId;
-              log(`Received cancellation notification: requestId: ${requestId}, reason: ${params.reason}`);
-              
-              // Check if this is a timeout cancellation
-              if (params.reason && params.reason.includes('Request timed out')) {
-                state.consecutiveTimeouts++;
-                log(`Timeout detected! Consecutive timeouts: ${state.consecutiveTimeouts}`);
-                
-                // If we have several consecutive timeouts, trigger reconnection
-                if (state.consecutiveTimeouts >= 3 && !state.reconnecting) {
-                  log('Multiple consecutive timeouts detected, triggering reconnection');
-                  state.transportReady = false;
-                  startReconnection();
-                  state.consecutiveTimeouts = 0; // Reset the counter
-                }
-              }
-              
-              state.messageQueue = state.messageQueue.filter(m => m.id !== requestId);
-            }
-          }
-          
-          // Use the message handler instead of sending directly
-          await handleRequestMessage(state.transport, message, thisRequestId);
-        } catch (error) {
-          log(`Error processing stdin message: ${error.message}`);
-          log(`Raw input: ${line}`);
-          
-          // Check if this is a connection error
-          if (isFatalConnectionError(error)) {
-            log('Connection error detected, notifying client');
-            writeErrorMessage(`Connection lost, client should reconnect: ${error.message}`, {}, ErrorCode.ConnectionClosed, thisRequestId);
-            state.transportReady = false;
-            startReconnection();
-          }
-          
-          if (error.stack) {
-            log(`Error stack: ${error.stack}`);
-          }
-        }
-      }
-    });
+    state.readline.on('line', handleStdinMessage);
   }
   
   // Public API
