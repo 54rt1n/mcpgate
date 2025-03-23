@@ -37,7 +37,8 @@ const MCPGate = (function() {
     transportReady: false,
     reconnecting: false,
     reconnectAttempts: 0,
-    originalSessionId: null // Store the original session ID for reconnection
+    originalSessionId: null, // Store the original session ID for reconnection
+    consecutiveTimeouts: 0   // Track consecutive timeouts
   };
   
   // Standard handshake message
@@ -73,12 +74,13 @@ const MCPGate = (function() {
       : (message && message.message ? message.message : 'Unknown error');
     
     // Ensure id is never undefined (JSON-RPC spec requires id to be included, can be null)
-    const responseId = id !== undefined ? id : null;
+    const responseId = id !== undefined ? id : "error-" + Date.now();
     
     // Write to stdout
     process.stdout.write(JSON.stringify({
       jsonrpc: '2.0',
       id: responseId,
+      method: "error",  // Add a method field to satisfy the validator
       error: {
         code: code,
         message: myMessage,
@@ -221,7 +223,7 @@ const MCPGate = (function() {
       log('Creating new client instance');
       state.client = new Client({
         name: 'mcpgate',
-        version: '1.0.1',
+        version: '1.0.2',
       });
       
       // Connect to the server - this calls transport.start() internally
@@ -282,7 +284,9 @@ const MCPGate = (function() {
       message.includes('Connection lost') ||
       message.includes('fetch failed') ||
       message.includes('network error') ||
-      message.includes('Not connected')
+      message.includes('Not connected') ||
+      message.includes('Request timed out') ||  // Consider timeouts as fatal errors
+      message.includes('Received request before initialization was complete')  // Add server-side initialization error
     );
   }
   
@@ -415,6 +419,9 @@ const MCPGate = (function() {
       log(`EventSource received message before ready, marking transport as ready`);
       state.transportReady = true;
       processQueue(transport);
+      
+      // Reset consecutive timeouts on successful message
+      state.consecutiveTimeouts = 0;
     }
     
     // Format as proper JSON-RPC message for stdout
@@ -423,6 +430,8 @@ const MCPGate = (function() {
     // Log appropriate debug info based on message type
     if ('id' in jsonData && 'result' in jsonData) {
       log(`EventSource received response for request ID: ${jsonData.id}${jsonData.result ? ' (type: ' + (typeof jsonData.result === 'object' ? 'object' : typeof jsonData.result) + ')' : ''}`);
+      // Reset consecutive timeouts on successful response
+      state.consecutiveTimeouts = 0;
     } else if ('id' in jsonData && 'error' in jsonData) {
       log(`EventSource received error for request ID: ${jsonData.id}: ${jsonData.error.message}`);
       
@@ -430,7 +439,8 @@ const MCPGate = (function() {
       if (jsonData.error.message && (
           jsonData.error.message.includes('Could not find session') ||
           jsonData.error.message.includes('Session expired') ||
-          jsonData.error.message.includes('Invalid session')
+          jsonData.error.message.includes('Invalid session') ||
+          jsonData.error.message.includes('Received request before initialization was complete')
       )) {
         log('Server reported session error, triggering reconnection');
         state.transportReady = false;
@@ -621,6 +631,7 @@ const MCPGate = (function() {
               jsonrpc: "2.0",
               method: "notifications/cancelled",
               params: {
+                requestId: "shutdown-" + Date.now(),
                 reason: "Client shutting down"
               }
             });
@@ -632,6 +643,7 @@ const MCPGate = (function() {
           log(`Error sending shutdown notification: ${error.message}`);
           writeErrorMessage(error, {}, -32000);
         }
+
         
         // Now close the client
         await state.client.close();
@@ -675,6 +687,21 @@ const MCPGate = (function() {
               const params = message.params;
               const requestId = params.requestId;
               log(`Received cancellation notification: requestId: ${requestId}, reason: ${params.reason}`);
+              
+              // Check if this is a timeout cancellation
+              if (params.reason && params.reason.includes('Request timed out')) {
+                state.consecutiveTimeouts++;
+                log(`Timeout detected! Consecutive timeouts: ${state.consecutiveTimeouts}`);
+                
+                // If we have several consecutive timeouts, trigger reconnection
+                if (state.consecutiveTimeouts >= 3 && !state.reconnecting) {
+                  log('Multiple consecutive timeouts detected, triggering reconnection');
+                  state.transportReady = false;
+                  startReconnection();
+                  state.consecutiveTimeouts = 0; // Reset the counter
+                }
+              }
+              
               state.messageQueue = state.messageQueue.filter(m => m.id !== requestId);
             }
           }
