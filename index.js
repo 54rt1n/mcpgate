@@ -21,6 +21,8 @@ import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
 // Create a module to encapsulate the functionality
 const MCPGate = (function() {
+  const VERSION = '1.0.3';
+
   // Private state
   let config = {
     url: null,
@@ -42,7 +44,8 @@ const MCPGate = (function() {
     originalSessionId: null, // Store the original session ID for reconnection
     consecutiveTimeouts: 0,   // Track consecutive timeouts
     lastReconnectAttempt: 0,  // Track the timestamp of the last reconnection attempt
-    reconnectTimer: null      // Track the active reconnect timer
+    reconnectTimer: null,      // Track the active reconnect timer
+    heartbeatTimer: null      // Track the heartbeat timer for pipe check
   };
   
   // Standard handshake message
@@ -51,7 +54,7 @@ const MCPGate = (function() {
     params: {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "claude-ai", version: "0.1.0" }
+      clientInfo: { name: "mcpgate", version: VERSION }
     },
     jsonrpc: "2.0",
     id: 0
@@ -64,7 +67,9 @@ const MCPGate = (function() {
    */
   function log(...args) {
     if (config.debug) {
-      console.error('[mcpgate]', ...args);
+      // Get first 3 chars of session ID to identify the instance
+      const sessionPrefix = config.sessionId ? config.sessionId.substring(0, 3) : 'xxx';
+      console.error(`[mcpgate][${sessionPrefix}]`, ...args);
     }
   }
   
@@ -141,6 +146,11 @@ const MCPGate = (function() {
    */
   async function createConnection(isReconnect = false) {
     try {
+      // Set reconnecting flag to true at the very start to prevent race conditions
+      if (isReconnect) {
+        state.reconnecting = true;
+      }
+      
       // Cleanup existing connection if any
       if (state.client) {
         try {
@@ -150,10 +160,32 @@ const MCPGate = (function() {
           if (state.transport && state.transport._eventSource) {
             try {
               log('Force closing EventSource connection');
-              state.transport._eventSource.close();
-              state.transport._eventSource.onopen = null;
-              state.transport._eventSource.onmessage = null;
-              state.transport._eventSource.onerror = null;
+              // Remove all handlers before closing to prevent memory leaks
+              const es = state.transport._eventSource;
+              
+              // Store references to all event handlers
+              const oldOnOpen = es.onopen;
+              const oldOnMessage = es.onmessage;
+              const oldOnError = es.onerror;
+              
+              // Detach all handler references
+              es.onopen = null;
+              es.onmessage = null;
+              es.onerror = null;
+              
+              // Remove any custom event listeners
+              if (es._endpointListener) {
+                es.removeEventListener('endpoint', es._endpointListener);
+                es._endpointListener = null;
+              }
+              
+              // Close the connection
+              es.close();
+              
+              // Important: Set the reference to null after closing
+              state.transport._eventSource = null;
+              
+              log('EventSource connection properly closed and all handlers removed');
             } catch (err) {
               log(`Error closing EventSource: ${err.message}`);
             }
@@ -164,19 +196,28 @@ const MCPGate = (function() {
             try {
               log('Aborting any in-flight requests');
               state.transport._abortController.abort();
+              // Create a new abort controller for next connection
+              state.transport._abortController = new AbortController();
             } catch (err) {
               log(`Error aborting requests: ${err.message}`);
             }
           }
           
+          // Brief delay to allow cleanup operations to complete
+          await new Promise(resolve => setTimeout(resolve, 300));
+          
           // Finally close the client which should close the transport
-          await state.client.close();
+          try {
+            await state.client.close();
+          } catch (closeErr) {
+            log(`Error during client.close(): ${closeErr.message}`);
+          }
         } catch (err) {
           log(`Error closing existing client: ${err.message}`);
         }
       }
       
-      // Clear previous instances
+      // Clear previous instances - CRITICAL to avoid memory leaks
       state.client = null;
       state.transport = null;
       
@@ -222,7 +263,7 @@ const MCPGate = (function() {
       const transport = new SSEClientTransport(sseUrl);
       log('Transport created');
       
-      // Store the transport for later access
+      // Store the transport for later access - Important: set this before adding debug wrappers
       state.transport = transport;
       
       // Add debug wrappers
@@ -243,7 +284,9 @@ const MCPGate = (function() {
           state.transportReady = false;
           
           // Trigger reconnection with a slight delay to avoid rapid reconnect cycles
-          startReconnection();
+          if (!state.reconnecting) {
+            startReconnection();
+          }
         } else {
           // Non-fatal connection error - signal client to retry current request
           writeErrorMessage(`SSE connection error, client should retry: ${error.message}`);
@@ -269,7 +312,7 @@ const MCPGate = (function() {
         state.transportReady = false;
         writeErrorMessage('SSE connection closed, client should reconnect');
         
-        // Attempt reconnection
+        // Attempt reconnection - but only if we're not already reconnecting
         if (!state.reconnecting) {
           startReconnection();
         }
@@ -282,7 +325,7 @@ const MCPGate = (function() {
       log('Creating new client instance');
       state.client = new Client({
         name: 'mcpgate',
-        version: '1.0.3',
+        version: VERSION,
       });
       
       // Connect to the server - this calls transport.start() internally
@@ -311,6 +354,9 @@ const MCPGate = (function() {
       if (error.stack) {
         log(`Error stack: ${error.stack}`);
       }
+      
+      // Always make sure to clear reconnecting flag in case of error
+      state.reconnecting = false;
       
       // Check if we should retry
       if (isReconnect) {
@@ -361,6 +407,9 @@ const MCPGate = (function() {
       return;
     }
     
+    // Immediately set reconnecting flag to prevent race conditions
+    state.reconnecting = true;
+    
     // Clear any existing timer
     if (state.reconnectTimer) {
       clearTimeout(state.reconnectTimer);
@@ -380,7 +429,6 @@ const MCPGate = (function() {
     // Update attempt counter and timestamp
     state.reconnectAttempts++;
     state.lastReconnectAttempt = currentTime;
-    state.reconnecting = true;
     
     // Calculate delay with exponential backoff (capped at 10 seconds)
     const delay = Math.min(
@@ -649,7 +697,7 @@ const MCPGate = (function() {
           // Add explicit error handler to detect early connection issues
           const originalOnError = transport._eventSource.onerror;
           transport._eventSource.onerror = (err) => {
-            log(`EventSource error: ${JSON.stringify(err)}`);
+            log(`EventSource error: ${err ? (err.type || JSON.stringify(err)) : 'error'}`);
             
             // Only react to errors if we're not already handling them
             if (!state.reconnecting && transport._eventSource) {
@@ -662,7 +710,9 @@ const MCPGate = (function() {
                 if (!state.reconnecting) {
                   log('Scheduling reconnection after EventSource error');
                   setTimeout(() => {
-                    startReconnection();
+                    if (!state.reconnecting) {
+                      startReconnection();
+                    }
                   }, 1000); // Small delay to prevent rapid reconnection attempts
                 }
               }
@@ -680,7 +730,7 @@ const MCPGate = (function() {
           };
           
           // Add explicit handler for the endpoint event
-          transport._eventSource.addEventListener("endpoint", (event) => {
+          const endpointListener = (event) => {
             try {
               log('Received endpoint event from server');
               // Now that we have an endpoint, we can mark the transport as ready
@@ -699,7 +749,11 @@ const MCPGate = (function() {
             } catch (error) {
               log(`Error processing endpoint event: ${error.message}`);
             }
-          });
+          };
+          
+          // Store listener reference for cleanup
+          transport._eventSource._endpointListener = endpointListener;
+          transport._eventSource.addEventListener("endpoint", endpointListener);
           
           // Insert our raw event handler
           const originalESOnMessage = transport._eventSource.onmessage;
@@ -746,15 +800,103 @@ const MCPGate = (function() {
   // ===== Lifecycle Management =====
   
   /**
+   * Check if stdout pipe is still open
+   */
+  function checkPipeStatus() {
+    try {
+      // Check if stdout is writable
+      if (!process.stdout.writable) {
+        log('Detected closed pipe (stdout not writable), initiating shutdown');
+        shutdown().catch(() => process.exit(0));
+        return false;
+      }
+      
+      // Try writing an empty string to detect if pipe is broken
+      process.stdout.write('', (err) => {
+        if (err && err.code === 'EPIPE') {
+          log('Heartbeat detected broken pipe, initiating shutdown');
+          shutdown().catch(() => process.exit(0));
+        }
+      });
+      return true;
+    } catch (err) {
+      if (err.code === 'EPIPE') {
+        log('Heartbeat caught pipe error during check, initiating shutdown');
+        shutdown().catch(() => process.exit(0));
+        return false;
+      }
+      // Other errors we just log and keep going
+      log(`Pipe check error: ${err.message}`);
+      return true;
+    }
+  }
+  
+  /**
    * Graceful shutdown
    */
   async function shutdown() {
     log('Gracefully shutting down...');
     
     try {
+      // Clear any reconnection timers to prevent reconnection during shutdown
+      if (state.reconnectTimer) {
+        clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = null;
+      }
+      
+      // Clear the heartbeat timer
+      if (state.heartbeatTimer) {
+        clearInterval(state.heartbeatTimer);
+        state.heartbeatTimer = null;
+      }
+      
+      // Set flag to prevent new reconnection attempts
+      state.reconnecting = true;
+      
       // Clean up readline interface
       if (state.readline) {
         state.readline.close();
+        state.readline = null;
+      }
+      
+      // Properly clean up EventSource if it exists
+      if (state.transport && state.transport._eventSource) {
+        try {
+          log('Cleanup: Closing EventSource connection');
+          const es = state.transport._eventSource;
+          
+          // Store references to all event handlers
+          const oldOnOpen = es.onopen;
+          const oldOnMessage = es.onmessage;
+          const oldOnError = es.onerror;
+          
+          // Detach all handler references
+          es.onopen = null;
+          es.onmessage = null;
+          es.onerror = null;
+          
+          // Remove any custom event listeners
+          if (es._endpointListener) {
+            es.removeEventListener('endpoint', es._endpointListener);
+            es._endpointListener = null;
+          }
+          
+          es.close();
+          state.transport._eventSource = null;
+        } catch (err) {
+          log(`Error closing EventSource during shutdown: ${err.message}`);
+        }
+      }
+      
+      // Abort any in-flight requests
+      if (state.transport && state.transport._abortController) {
+        try {
+          log('Aborting any in-flight requests during shutdown');
+          state.transport._abortController.abort();
+          state.transport._abortController = null;
+        } catch (err) {
+          log(`Error aborting requests during shutdown: ${err.message}`);
+        }
       }
       
       // Close the client connection and wait for it to complete
@@ -764,7 +906,7 @@ const MCPGate = (function() {
         try {
           // Send a cancellation notification before closing
           const transport = state.client.transport;
-          if (transport) {
+          if (transport && state.transportReady) {
             log('Sending shutdown notification...');
             await transport.send({
               jsonrpc: "2.0",
@@ -773,6 +915,8 @@ const MCPGate = (function() {
                 requestId: "shutdown-" + Date.now(),
                 reason: "Client shutting down"
               }
+            }).catch(err => {
+              log(`Error sending final message: ${err.message}`);
             });
             log('Shutdown notification sent.');
             // Small delay to allow the server to process the notification
@@ -780,14 +924,25 @@ const MCPGate = (function() {
           }
         } catch (error) {
           log(`Error sending shutdown notification: ${error.message}`);
-          writeErrorMessage(error, {}, ErrorCode.ConnectionClosed);
         }
 
         
         // Now close the client
-        await state.client.close();
-        log('Client connection closed.');
+        try {
+          await state.client.close().catch(err => {
+            log(`Error during client close: ${err.message}`);
+          });
+          log('Client connection closed.');
+        } catch (finalError) {
+          log(`Final error during client close: ${finalError.message}`);
+        }
       }
+      
+      // Clear all state to ensure nothing is left hanging
+      state.client = null;
+      state.transport = null;
+      state.messageQueue = [];
+      state.transportReady = false;
       
       log('Shutdown complete.');
       process.exit(0);
@@ -918,6 +1073,24 @@ const MCPGate = (function() {
           process.exit(1);
         });
       });
+      
+      // Handle broken pipe errors gracefully with cleanup
+      process.stdout.on('error', (err) => {
+        if (err.code === 'EPIPE') {
+          log('Broken pipe detected when writing to stdout, initiating shutdown');
+          shutdown().catch(() => process.exit(0));
+        }
+      });
+      
+      // Setup heartbeat to detect closed pipe
+      state.heartbeatTimer = setInterval(() => {
+        checkPipeStatus();
+      }, 5000); // Check every 5 seconds
+      
+      // Allow Node.js to exit even if this interval is still pending
+      if (state.heartbeatTimer.unref) {
+        state.heartbeatTimer.unref();
+      }
       
       // Setup stdin handler for message input
       setupStdinHandler();
