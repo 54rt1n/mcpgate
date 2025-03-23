@@ -23,7 +23,7 @@ import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
 // Create a module to encapsulate the functionality
 const MCPGate = (function() {
-  const VERSION = '1.0.3';
+  const VERSION = '1.0.4';
 
   // Private state
   let config = {
