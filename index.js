@@ -67,26 +67,30 @@ const MCPGate = (function() {
   /**
    * Write an error message to stdout in JSON-RPC format
    */
-  function writeErrorMessage(message, data, code = -32000, id = null) {
+  function writeErrorMessage(message, data, code = -32000, id = undefined) {
     // Format the message
     const myMessage = typeof message === 'string' 
       ? message 
       : (message && message.message ? message.message : 'Unknown error');
     
-    // Ensure id is never undefined (JSON-RPC spec requires id to be included, can be null)
-    const responseId = id !== undefined ? id : "error-" + Date.now();
-    
-    // Write to stdout
-    process.stdout.write(JSON.stringify({
+    // Ensure id is a string or number, never null
+    // If id is null or undefined, generate a string ID
+    const responseId = (id !== undefined && id !== null) ? id : "error-" + Date.now();
+
+    const messageData = JSON.stringify({
       jsonrpc: '2.0',
       id: responseId,
-      method: "error",  // Add a method field to satisfy the validator
       error: {
         code: code,
         message: myMessage,
         data: data || {}
       }
-    }) + '\n');
+    });
+
+    log(`Writing error message to stdout: ${messageData}`);
+    
+    // Write to stdout - ensure proper JSON-RPC error format
+    process.stdout.write(messageData + '\n');
   }
   
   // ===== Connection Management =====
@@ -223,7 +227,7 @@ const MCPGate = (function() {
       log('Creating new client instance');
       state.client = new Client({
         name: 'mcpgate',
-        version: '1.0.2',
+        version: '1.0.3',
       });
       
       // Connect to the server - this calls transport.start() internally
@@ -266,7 +270,9 @@ const MCPGate = (function() {
       } else {
         // Initial connection failed
         writeErrorMessage(error);
-        process.exit(1);
+        state.reconnectAttempts = 1; // Start at 1 since we already tried once
+        startReconnection();
+        return false;
       }
     }
   }
@@ -742,6 +748,13 @@ const MCPGate = (function() {
         process.exit(1);
       }
       
+      // Sanitize URL - remove surrounding quotes if present
+      if ((url.startsWith('"') && url.endsWith('"')) || 
+          (url.startsWith("'") && url.endsWith("'"))) {
+        url = url.substring(1, url.length - 1);
+        log(`Removed quotes from URL: ${url}`);
+      }
+      
       // Initialize configuration
       config.url = url;
       config.sessionId = randomUUID();
@@ -770,7 +783,9 @@ const MCPGate = (function() {
         if (error.stack) {
           log(`Error stack: ${error.stack}`);
         }
-        process.exit(1);
+        // If the connection fails, trigger reconnection logic
+        state.reconnectAttempts = 1;
+        startReconnection();
       });
     }
   };

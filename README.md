@@ -91,7 +91,7 @@ MCP clients such as Claude Desktop can be configured to use MCPGate as a bridge 
       "args": [
         "-y",
         "mcpgate",
-        "\"http://example.com:8000/sse\""
+        "http://example.com:8000/sse"
       ]
     }
   }

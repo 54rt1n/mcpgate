@@ -1,6 +1,6 @@
 {
   "name": "mcpgate",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A simple stdio-to-http bridge for MCP connections",
   "main": "index.js",
   "type": "module",
