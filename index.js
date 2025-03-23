@@ -2,6 +2,8 @@
 
 /**
  * MCP SDK Client Bridge (index.js)
+ * 
+ * (c) Martin Bukowski, 2025-03-23; Licensed under the MIT License
  * ------------------------------
  * This script:
  * 1. Uses the official Model Context Protocol SDK
